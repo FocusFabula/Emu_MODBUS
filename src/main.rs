@@ -2,8 +2,8 @@ use bitvec::prelude::*;
 mod device;
 mod modbus_handle;
 mod request;
-
 use crate::device::ModbusDevice;
+
 fn main() {
     println!("Hello, world!");
     let conf = device::DeviceConfig::new(20, 20, 20, 20);
@@ -17,7 +17,7 @@ fn main() {
     println!("{:?}", coils);
 
     let mut new_val = bits![u8, Lsb0;
-    1, 1, 1,
+        1, 1, 1,
     ];
 
     let write_coils = dev.write_multiple_coils(10, new_val.into());
