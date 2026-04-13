@@ -96,70 +96,130 @@ pub enum RequestFunction {
 }
 
 impl RequestFunction {
-    fn try_from_req_pdu(req_pdu: &BitVec<u8>) -> Result<Self, ModbusException> {
+    fn from_16bit(req_pdu: &BitVec<u8, Msb0>) -> Result<(u16, u16), ModbusException> {
+        if req_pdu.len() < 40 {
+            return Err(ModbusException::IllegalFunction);
+        }
+        let start = req_pdu[8..24].load_be::<u16>();
+        let data = req_pdu[24..40].load_be::<u16>();
+        return Ok((start, data));
+    }
+
+    fn build_2bytes_pdu(
+        &self,
+        function_number: u8,
+        start: u16,
+        data: u16,
+        req_pdu: &mut BitVec<u8, Msb0>,
+    ) {
+        req_pdu.extend_from_bitslice(function_number.view_bits::<Msb0>());
+        req_pdu.extend_from_bitslice(start.view_bits::<Msb0>());
+        req_pdu.extend_from_bitslice(data.view_bits::<Msb0>());
+    }
+    pub fn get_request_function_code(&self) -> Result<u8, ModbusException> {
+        match self {
+            Self::ReadCoils { .. } => Ok(1),
+            Self::ReadDiscreteInputs { .. } => Ok(2),
+            Self::ReadHoldingRegisters { .. } => Ok(3),
+            Self::ReadInputRegisters { .. } => Ok(4),
+            Self::WriteSingleCoil { .. } => Ok(5),
+            Self::WriteSingleRegister { .. } => Ok(6),
+            Self::ReadExceptionStatus => Ok(7),
+            _ => Err(ModbusException::IllegalFunction),
+        }
+    }
+    pub fn try_from_req_pdu(req_pdu: &BitVec<u8, Msb0>) -> Result<Self, ModbusException> {
         if req_pdu.len() < 8 {
             return Err(ModbusException::IllegalFunction);
         }
         let function_bytes = &req_pdu[0..8];
         let function_code: u8 = function_bytes.load_be::<u8>();
+        let (v1, v2) = Self::from_16bit(req_pdu)?;
+
         let function = match function_code {
-            1 => {
-                if req_pdu.len() < 40 {
-                    return Err(ModbusException::IllegalFunction);
-                }
-                Ok(RequestFunction::ReadCoils {
-                    start_adress: req_pdu[8..24].load_be::<u16>(),
-                    quantity_of_coils: req_pdu[24..40].load_be::<u16>(),
-                })
-            }
-            2 => {
-                if req_pdu.len() < 40 {
-                    return Err(ModbusException::IllegalFunction);
-                }
-                Ok(RequestFunction::ReadDiscreteInputs {
-                    start_adress: req_pdu[8..24].load_be::<u16>(),
-                    quantity_of_inputs: req_pdu[24..40].load_be::<u16>(),
-                })
-            }
-            3 => {
-                if req_pdu.len() < 40 {
-                    return Err(ModbusException::IllegalFunction);
-                }
-                Ok(RequestFunction::ReadHoldingRegisters {
-                    start_adress: req_pdu[8..24].load_be::<u16>(),
-                    quantity_of_registers: req_pdu[24..40].load_be::<u16>(),
-                })
-            }
-            4 => {
-                if req_pdu.len() < 40 {
-                    return Err(ModbusException::IllegalFunction);
-                }
-                Ok(RequestFunction::ReadInputRegisters {
-                    start_adress: req_pdu[8..24].load_be::<u16>(),
-                    quantity_of_input_registers: req_pdu[24..40].load_be::<u16>(),
-                })
-            }
-            5 => {
-                if req_pdu.len() < 40 {
-                    return Err(ModbusException::IllegalFunction);
-                }
-                Ok(RequestFunction::WriteSingleCoil {
-                    output_adress: req_pdu[8..24].load_be::<u16>(),
-                    output_value: req_pdu[24..40].load_be::<u16>(),
-                })
-            }
-            6 => {
-                if req_pdu.len() < 40 {
-                    return Err(ModbusException::IllegalFunction);
-                }
-                Ok(RequestFunction::WriteSingleRegister {
-                    regiter_adress: req_pdu[8..24].load_be::<u16>(),
-                    register_value: req_pdu[24..40].load_be::<u16>(),
-                })
-            }
-            7 => Ok(RequestFunction::ReadExceptionStatus),
+            1 => Ok(Self::ReadCoils {
+                start_adress: v1,
+                quantity_of_coils: v2,
+            }),
+            2 => Ok(Self::ReadDiscreteInputs {
+                start_adress: v1,
+                quantity_of_inputs: v2,
+            }),
+            3 => Ok(Self::ReadHoldingRegisters {
+                start_adress: v1,
+                quantity_of_registers: v2,
+            }),
+            4 => Ok(Self::ReadInputRegisters {
+                start_adress: v1,
+                quantity_of_input_registers: v2,
+            }),
+            5 => Ok(Self::WriteSingleCoil {
+                output_adress: v1,
+                output_value: v2,
+            }),
+
+            6 => Ok(Self::WriteSingleRegister {
+                regiter_adress: v1,
+                register_value: v2,
+            }),
+            7 => Ok(Self::ReadExceptionStatus),
             _ => Err(ModbusException::IllegalFunction),
         };
         return function;
+    }
+
+    pub fn try_to_req_pdu(&self) -> Result<BitVec<u8, Msb0>, ModbusException> {
+        use RequestFunction::*;
+        let mut req_pdu = BitVec::<u8, Msb0>::new();
+        match self {
+            ReadCoils {
+                start_adress,
+                quantity_of_coils,
+            } => {
+                self.build_2bytes_pdu(1, *start_adress, *quantity_of_coils, &mut req_pdu);
+                Ok(req_pdu)
+            }
+
+            ReadDiscreteInputs {
+                start_adress,
+                quantity_of_inputs,
+            } => {
+                self.build_2bytes_pdu(2, *start_adress, *quantity_of_inputs, &mut req_pdu);
+                Ok(req_pdu)
+            }
+            ReadHoldingRegisters {
+                start_adress,
+                quantity_of_registers,
+            } => {
+                self.build_2bytes_pdu(3, *start_adress, *quantity_of_registers, &mut req_pdu);
+                Ok(req_pdu)
+            }
+            ReadInputRegisters {
+                start_adress,
+                quantity_of_input_registers,
+            } => {
+                self.build_2bytes_pdu(4, *start_adress, *quantity_of_input_registers, &mut req_pdu);
+                Ok(req_pdu)
+            }
+            WriteSingleCoil {
+                output_adress,
+                output_value,
+            } => {
+                self.build_2bytes_pdu(5, *output_adress, *output_value, &mut req_pdu);
+                Ok(req_pdu)
+            }
+            WriteSingleRegister {
+                regiter_adress,
+                register_value,
+            } => {
+                self.build_2bytes_pdu(6, *regiter_adress, *register_value, &mut req_pdu);
+                Ok(req_pdu)
+            }
+            ReadExceptionStatus => {
+                req_pdu.extend_from_bitslice(&0x07u8.view_bits::<Msb0>());
+                Ok(req_pdu)
+            }
+            _ => Err(ModbusException::IllegalFunction),
+        }
     }
 }

@@ -2,6 +2,7 @@ use bitvec::prelude::*;
 mod device;
 mod modbus_handle;
 mod request;
+mod response;
 use crate::device::ModbusDevice;
 
 fn main() {
