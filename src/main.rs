@@ -1,3 +1,4 @@
-fn main() {
-    println!("hello world");
-}
+#![no_std]
+mod data;
+
+fn main() {}
