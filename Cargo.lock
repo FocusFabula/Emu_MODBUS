@@ -90,6 +90,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "log"
+version = "0.4.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
 name = "mach2"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -212,6 +218,7 @@ name = "sim_desktop"
 version = "0.1.0"
 dependencies = [
  "core_modbus",
+ "log",
  "serde",
  "serde_json",
  "serialport",

@@ -69,11 +69,7 @@ pub struct ModbusTcpAdu;
 
 impl ModbusTcpAdu {
     /// Funkcja parsująca ADU, wywołująca rdzeń i pakująca odpowiedź.
-    pub fn process(
-        rx_buffer: &[u8],
-        tx_buffer: &mut [u8],
-        device: &mut impl ModbusDevice,
-    ) -> usize {
+    pub fn process(rx_buffer: &[u8], tx_buffer: &mut [u8], router: &mut ModbusRouter) -> usize {
         // 1. Walidacja absolutnego minimum (7 bajtów MBAP + min. 1 bajt kodu funkcji)
         if rx_buffer.len() < 8 {
             return 0; // Zignoruj śmieci sieciowe
@@ -88,6 +84,14 @@ impl ModbusTcpAdu {
         let len_lo = rx_buffer[5];
         let uid = rx_buffer[6];
 
+        // Parsowanie urządzeń
+        let device = match router.get_device_mut(uid) {
+            Some(dev) => dev,
+            None => {
+                println!("Router: Ignored frame for unknownSlave id: {}", uid);
+                return 0;
+            }
+        };
         // Protokół Modbus TCP zawsze ma PID równe 0x0000
         if pid_hi != 0 || pid_lo != 0 {
             return 0;
