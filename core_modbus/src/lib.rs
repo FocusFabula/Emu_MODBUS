@@ -1,13 +1,13 @@
 #![no_std]
 
 #[derive(Debug, PartialEq)]
-struct ReqPdu<'a> {
+pub struct ReqPdu<'a> {
     function_code: u8,
     request_data: &'a [u8],
 }
 
 impl<'a> ReqPdu<'a> {
-    fn parse(data: &'a [u8]) -> Result<Self, &'static str> {
+    pub fn parse(data: &'a [u8]) -> Result<Self, &'static str> {
         if data.is_empty() {
             return Err("data is empty");
         }
@@ -31,7 +31,7 @@ impl<'a> ReqPdu<'a> {
 //     exception_code: u8,
 // }
 
-enum ModbusRequest {
+pub enum ModbusRequest {
     ReadCoils { start_addr: u16, quantity: u16 },
     ReadDiscreteInputs { start_addr: u16, quantity: u16 },
     ReadHoldingRegisters { start_addr: u16, quantity: u16 },
@@ -41,7 +41,7 @@ enum ModbusRequest {
 }
 
 impl ModbusRequest {
-    fn read_coils(data: &[u8]) -> Result<ModbusRequest, &'static str> {
+    pub fn read_coils(data: &[u8]) -> Result<ModbusRequest, &'static str> {
         if data.len() != 4 {
             return Err("No enaugh data for function 03 => Holding registers");
         }
@@ -54,7 +54,7 @@ impl ModbusRequest {
         })
     }
 
-    fn read_discrete_inputs(data: &[u8]) -> Result<ModbusRequest, &'static str> {
+    pub fn read_discrete_inputs(data: &[u8]) -> Result<ModbusRequest, &'static str> {
         if data.len() != 4 {
             return Err("No enaugh data for function 03 => Holding registers");
         }
@@ -65,7 +65,7 @@ impl ModbusRequest {
             quantity,
         })
     }
-    fn read_holding_registers(data: &[u8]) -> Result<ModbusRequest, &'static str> {
+    pub fn read_holding_registers(data: &[u8]) -> Result<ModbusRequest, &'static str> {
         if data.len() != 4 {
             return Err("No enaugh data for function 03 => Holding registers");
         }
@@ -76,7 +76,7 @@ impl ModbusRequest {
             quantity,
         })
     }
-    fn read_input_registers(data: &[u8]) -> Result<ModbusRequest, &'static str> {
+    pub fn read_input_registers(data: &[u8]) -> Result<ModbusRequest, &'static str> {
         if data.len() != 4 {
             return Err("No enaugh data for function 04 => Read Input Registers");
         }
@@ -88,7 +88,7 @@ impl ModbusRequest {
         })
     }
 
-    fn write_single_coil(data: &[u8]) -> Result<ModbusRequest, &'static str> {
+    pub fn write_single_coil(data: &[u8]) -> Result<ModbusRequest, &'static str> {
         if data.len() != 4 {
             return Err("No enaugh data for function 05 => Write single coil");
         }
@@ -96,7 +96,7 @@ impl ModbusRequest {
         let value = u16::from_be_bytes([data[2], data[3]]);
         Ok(ModbusRequest::WriteSingleCoil { addr, value })
     }
-    fn write_single_register(data: &[u8]) -> Result<ModbusRequest, &'static str> {
+    pub fn write_single_register(data: &[u8]) -> Result<ModbusRequest, &'static str> {
         if data.len() != 4 {
             return Err("No enaugh data for function 06 => Write single register");
         }
@@ -105,7 +105,7 @@ impl ModbusRequest {
         Ok(ModbusRequest::WriteSingleRegister { reg_addr, value })
     }
 
-    fn from_pdu(pdu: &ReqPdu) -> Result<ModbusRequest, &'static str> {
+    pub fn from_pdu(pdu: &ReqPdu) -> Result<ModbusRequest, &'static str> {
         let function_code = pdu.function_code;
         let request_data = pdu.request_data;
         match function_code {
@@ -122,7 +122,7 @@ impl ModbusRequest {
 
 #[derive(PartialEq)]
 #[repr(u8)]
-enum ModbusException {
+pub enum ModbusException {
     IllegalFunction = 1,
     IllegalDataAdress = 2,
     IllegalDataValue = 3,
@@ -158,7 +158,7 @@ pub trait ModbusDevice {
     fn get_discrete_input(&self, addr: u16) -> Result<bool, ModbusException>;
 }
 
-fn execute_request(
+pub fn execute_request(
     request: &ModbusRequest,
     tx_buffer: &mut [u8],
     device: &mut impl ModbusDevice,
@@ -326,7 +326,7 @@ fn execute_request(
 mod tests {
     extern crate std;
     use super::*;
-    use std::{dbg, println};
+    use std::dbg;
 
     struct DummyDevice {
         holding_registers: [u16; 10],
@@ -387,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn ReqPduParse() {
+    fn req_pdu_parse() {
         let raw_buffer = [0x03, 0x00, 0x6B, 0x00, 0x03];
         let req = ReqPdu::parse(&raw_buffer).unwrap();
         dbg!(&req);
