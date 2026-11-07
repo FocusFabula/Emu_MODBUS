@@ -1,7 +1,5 @@
-use log::{Level, Log, Metadata, Record, SetLoggerError};
-use std::fs::File;
-use std::io::Write;
-use std::sync::{Arc, Mutex};
+use log::{Level, Log, Metadata, Record};
+use std::sync::mpsc;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LogLayer {
@@ -23,24 +21,15 @@ impl LogLayer {
 }
 
 #[derive(Clone)]
-pub struct LogEntry {
-    pub level: Level,
-    pub layer: LogLayer,
-    pub message: String,
-}
-
-#[derive(Clone)]
 pub struct GuiLogger {
-    logs: Arc<Mutex<Vec<LogEntry>>>,
-    max_lines: usize,
+    sender: mpsc::Sender<String>,
 }
 
 impl GuiLogger {
-    pub fn new(max_lines: usize) -> Self {
-        Self {
-            logs: Arc::new(Mutex::new(Vec::new())),
-            max_lines,
-        }
+    pub fn init(sender: mpsc::Sender<String>) {
+        let logger = Self { sender };
+        log::set_max_level(log::LevelFilter::Info);
+        let _ = log::set_boxed_logger(Box::new(logger));
     }
 
     pub fn log_to(layer: LogLayer, level: Level, msg: &str) {
@@ -51,29 +40,6 @@ impl GuiLogger {
             Level::Debug => log::debug!("[{}] {}", layer.as_str(), msg),
             Level::Trace => log::trace!("[{}] {}", layer.as_str(), msg),
         }
-    }
-    pub fn get_logs(&self) -> Vec<LogEntry> {
-        let guard = self.logs.lock().unwrap();
-        guard.clone()
-    }
-    pub fn save_to_file(&self, filepath: &str) -> std::io::Result<()> {
-        let guard = self.logs.lock().unwrap();
-        let mut file = File::create(filepath)?;
-
-        for entry in guard.iter() {
-            writeln!(
-                file,
-                "[{}] [{}] {}",
-                entry.level,
-                entry.layer.as_str(),
-                entry.message
-            )?;
-        }
-        Ok(())
-    }
-    pub fn init(self) -> Result<(), SetLoggerError> {
-        log::set_max_level(log::LevelFilter::Info);
-        log::set_boxed_logger(Box::new(self))
     }
 }
 
@@ -102,28 +68,38 @@ impl Log for GuiLogger {
                 (LogLayer::System, msg) // Domyślnie System, bez wycinania
             };
 
-            let entry = LogEntry {
-                level: record.level(),
-                layer,
-                message: clean_msg,
-            };
-
-            // Ładny, czytelny format na konsoli: [INFO] [SYS  ] Treść wiadomości
-            println!(
-                "[{:<5}] [{}] {}",
-                entry.level,
-                entry.layer.as_str(),
-                entry.message
-            );
-
-            // Zapis do bufora dla GUI
-            let mut guard = self.logs.lock().unwrap();
-            if guard.len() >= self.max_lines {
-                guard.remove(0);
-            }
-            guard.push(entry);
+            let msg = format!("[{}] [{}] {}", record.level(), layer.as_str(), clean_msg);
+            println!("{}", msg);
+            let _ = self.sender.send(msg.to_string());
         }
     }
 
     fn flush(&self) {}
+}
+
+pub struct GuiLoggerBuffer {
+    logs: Vec<String>,
+    max_lines: usize,
+}
+
+impl GuiLoggerBuffer {
+    pub fn new(max_lines: usize) -> Self {
+        Self {
+            logs: Vec::new(),
+            max_lines,
+        }
+    }
+
+    pub fn get_logs(&self) -> &Vec<String> {
+        &self.logs
+    }
+
+    pub fn push(&mut self, message: String) {
+        if self.logs.len() > self.max_lines {
+            self.logs.push(message);
+            self.logs.remove(0);
+        } else {
+            self.logs.push(message);
+        }
+    }
 }
