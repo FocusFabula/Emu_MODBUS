@@ -1,13 +1,13 @@
+use crate::logger::{GuiLogger, LogLayer};
+use crate::sim_device::DynamicMemory;
 use core_modbus::{ModbusDevice, ModbusException, ModbusRequest, ReqPdu, execute_request};
+use log::Level;
 use serialport::{DataBits, Parity, SerialPort, StopBits};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use crate::logger::{GuiLogger, LogLayer};
-use crate::sim_device::DynamicMemory;
-use log::Level;
 
 fn format_hex(data: &[u8]) -> String {
     let hex_strings: Vec<String> = data.iter().map(|b| format!("{:02X}", b)).collect();
@@ -121,7 +121,11 @@ impl TcpServer {
 pub struct ModbusTcpAdu;
 
 impl ModbusTcpAdu {
-    pub fn process(rx_buffer: &[u8], tx_buffer: &mut [u8], router: &mut ModbusRouter) -> usize {
+    pub fn process(
+        rx_buffer: &[u8],
+        tx_buffer: &mut [u8],
+        router_handler: &Arc<Mutex<ModbusRouter>>,
+    ) -> usize {
         if rx_buffer.len() < 8 {
             return 0;
         }
@@ -133,7 +137,7 @@ impl ModbusTcpAdu {
         let len_hi = rx_buffer[4];
         let len_lo = rx_buffer[5];
         let uid = rx_buffer[6];
-
+        let mut router = router_handler.lock().unwrap();
         let device = match router.get_device_mut(uid) {
             Some(dev) => dev,
             None => {
@@ -170,7 +174,7 @@ impl ModbusTcpAdu {
                 );
 
                 let pdu_res_len = execute_request(&modbus_req, &mut tx_buffer[7..], device);
-
+                drop(router);
                 tx_buffer[0] = tid_hi;
                 tx_buffer[1] = tid_lo;
                 tx_buffer[2] = 0x00;
@@ -192,13 +196,17 @@ impl ModbusTcpAdu {
 pub struct ModbusRtuAdu;
 
 impl ModbusRtuAdu {
-    pub fn process(rx_buffer: &[u8], tx_buffer: &mut [u8], router: &mut ModbusRouter) -> usize {
+    pub fn process(
+        rx_buffer: &[u8],
+        tx_buffer: &mut [u8],
+        router_handler: &Arc<Mutex<ModbusRouter>>,
+    ) -> usize {
         if rx_buffer.len() < 4 {
             return 0;
         }
 
         let slave_id = rx_buffer[0];
-
+        let mut router = router_handler.lock().unwrap();
         let device = match router.get_device_mut(slave_id) {
             Some(dev) => dev,
             None => {
@@ -244,6 +252,7 @@ impl ModbusRtuAdu {
                 );
 
                 let pdu_res_len = execute_request(&modbus_req, &mut tx_buffer[1..], device);
+                drop(router);
                 let total_len_no_crc = pdu_res_len + 1;
                 let tx_crc = Self::crc16(&tx_buffer[..total_len_no_crc]);
 
@@ -375,7 +384,11 @@ impl SerialServer {
 pub struct ModbusAsciiAdu;
 
 impl ModbusAsciiAdu {
-    pub fn process(rx_buffer: &[u8], tx_buffer: &mut [u8], router: &mut ModbusRouter) -> usize {
+    pub fn process(
+        rx_buffer: &[u8],
+        tx_buffer: &mut [u8],
+        router_handler: &Arc<Mutex<ModbusRouter>>,
+    ) -> usize {
         if rx_buffer.len() < 9 || rx_buffer[0] != b':' {
             return 0;
         }
@@ -421,6 +434,7 @@ impl ModbusAsciiAdu {
         }
 
         let slave_addr = bin_rx[0];
+        let mut router = router_handler.lock().unwrap();
         let device = match router.get_device_mut(slave_addr) {
             Some(addr) => addr,
             None => {
@@ -449,6 +463,7 @@ impl ModbusAsciiAdu {
                 );
 
                 let pdu_res_len = execute_request(&modbus_req, &mut bin_tx[1..], device);
+                drop(router);
                 let total_res_bin_len = pdu_res_len + 1;
 
                 tx_buffer[0] = b':';
@@ -519,5 +534,9 @@ impl ModbusRouter {
 
     pub fn get_device_mut(&mut self, slave_id: u8) -> Option<&mut DynamicMemory> {
         self.devices.get_mut(&slave_id)
+    }
+
+    pub fn get_devices(&self) -> &HashMap<u8, DynamicMemory> {
+        &self.devices
     }
 }
