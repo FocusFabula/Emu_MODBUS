@@ -1,7 +1,7 @@
 use crate::{GuiLoggerBuffer, ModbusRouter};
-
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
+use serialport::{self, DataBits, Parity};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -395,18 +395,113 @@ impl WatchTable {
     }
 }
 
-
 struct GuiDevice {
     id: u8,
-    name: String
+    name: String,
 }
 
 // Creation of a new port
 
-struct GuiPort {
-    type: 
+struct TcpConnect {
+    ip: String,
+    port: usize,
 }
 
+impl TcpConnect {
+    fn new(ip: String, port: usize) -> Self {
+        Self { ip, port }
+    }
+
+    fn to_string(&self) -> String {
+        format!("{}:{}", self.ip, self.port)
+    }
+}
+
+struct SerialConnect {
+    is_open: bool,
+    scan: bool,
+    avalible_ports: Vec<String>,
+    port_id: usize,
+    serial_port: String,
+    bud_rate_selected: usize,
+    bud_rate: [usize; 8],
+    data_bits: DataBits,
+    parity: Parity,
+    stop_bits: usize,
+}
+
+impl SerialConnect {
+    fn new(serial_port: String, data_bits: DataBits, parity: Parity) -> Self {
+        let bud_rate = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
+        Self {
+            // GUI parameters
+            is_open: false,
+            scan: false,
+            avalible_ports: Vec::new(),
+            port_id: 0,
+            // serial parameters
+            serial_port,
+            bud_rate,
+            bud_rate_selected: bud_rate[3],
+            data_bits,
+            parity,
+            stop_bits: 2,
+        }
+    }
+
+    fn render_edit_window(state: &mut SerialConnect, ui: egui::Ui) {
+        let mut close = false;
+        if state.is_open {
+            let ctx = ui.ctx().clone();
+            egui::Window::new("Port editor")
+                .title_bar(true)
+                .open(&mut state.is_open)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(&ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let port_type_label = ui.label("Serial Port");
+                        ui.add(egui::TextEdit::singleline(&mut state.serial_port))
+                            .labelled_by(port_type_label.id);
+                        if ui.button("Scan").clicked() {
+                            match serialport::available_ports() {
+                                Ok(mut ports) => {
+                                    if ports.len() != 0 {
+                                        ports.sort_unstable_by_key(|i| i.port_name.clone());
+                                        for port in ports {
+                                            state.avalible_ports.push(port.port_name);
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    ui.label(err.to_string());
+                                }
+                            }
+                            state.scan = true;
+                        }
+                        if state.scan {
+                            egui::ComboBox::from_id_salt(port_type_label.id)
+                                .selected_text(state.avalible_ports[state.port_id].to_string())
+                                .show_ui(ui, |ui| {
+                                    for (i, port) in state.avalible_ports.iter().enumerate() {
+                                        ui.selectable_value(&mut state.port_id, i, port);
+                                    }
+                                });
+                        }
+                    });
+                });
+        }
+    }
+}
+
+enum ConnectionType {
+    TCP(TcpConnect),
+    ASCII(SerialConnect),
+    RTU(SerialConnect),
+}
+
+struct GuiPort {
+    port_type: ConnectionType,
+}
 
 pub struct MyApp {
     pub logs: GuiLoggerBuffer,
