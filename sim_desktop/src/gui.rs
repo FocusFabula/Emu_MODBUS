@@ -1,7 +1,9 @@
-use crate::{GuiLoggerBuffer, ModbusRouter};
+use crate::{DynamicMemory, GuiLoggerBuffer, ModbusRouter};
+
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use serialport::{self, DataBits, Parity};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -402,55 +404,209 @@ struct GuiDevice {
 
 // Creation of a new port
 
+#[derive(PartialEq, Eq, Debug, Clone)]
 struct TcpConnect {
     ip: String,
     port: usize,
+    timeout: Duration,
 }
 
 impl TcpConnect {
-    fn new(ip: String, port: usize) -> Self {
-        Self { ip, port }
+    fn new() -> Self {
+        Self {
+            ip: "127.0.0.1".to_string(),
+            port: 520,
+            timeout: Duration::from_millis(3000),
+        }
     }
+    fn render_edit_window(ui: &mut egui::Ui, state: &mut TcpConnect) {
+        ui.horizontal(|ui| {
+            let host_label = ui.label("Host");
+            ui.add(egui::TextEdit::singleline(&mut state.ip))
+                .labelled_by(host_label.id);
+        });
 
+        ui.horizontal(|ui| {
+            let host_label = ui.label("Host");
+            ui.add(
+                egui::DragValue::new(&mut state.port)
+                    .speed(1.0)
+                    .range(1..=65535),
+            )
+            .labelled_by(host_label.id);
+        });
+        ui.horizontal(|ui| {
+            let timeout_label = ui.label("Host");
+            let mut timeout_value = state.timeout.as_millis() as usize;
+            ui.add(
+                egui::DragValue::new(&mut timeout_value)
+                    .speed(1.0)
+                    .range(1..=5000),
+            )
+            .labelled_by(timeout_label.id);
+            state.timeout = Duration::from_millis(timeout_value as u64);
+        });
+    }
     fn to_string(&self) -> String {
         format!("{}:{}", self.ip, self.port)
     }
 }
 
+#[derive(PartialEq, Eq, Debug, Clone)]
 struct SerialConnect {
-    is_open: bool,
     scan: bool,
     avalible_ports: Vec<String>,
+    serial_port_buffer: String,
     port_id: usize,
-    serial_port: String,
-    bud_rate_selected: usize,
-    bud_rate: [usize; 8],
+    bud_rate_values: [usize; 8],
+    bud_rate_id: usize,
+    bud_rate_buffer: usize,
+
     data_bits: DataBits,
     parity: Parity,
     stop_bits: usize,
 }
 
 impl SerialConnect {
-    fn new(serial_port: String, data_bits: DataBits, parity: Parity) -> Self {
-        let bud_rate = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
+    fn new(data_bits: DataBits, parity: Parity) -> Self {
+        let bud_rates = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
         Self {
-            // GUI parameters
-            is_open: false,
             scan: false,
             avalible_ports: Vec::new(),
             port_id: 0,
-            // serial parameters
-            serial_port,
-            bud_rate,
-            bud_rate_selected: bud_rate[3],
+            serial_port_buffer: "/dev/pts/3".to_string(),
+            bud_rate_values: bud_rates,
+            bud_rate_id: 0,
+            bud_rate_buffer: bud_rates[3],
             data_bits,
             parity,
             stop_bits: 2,
         }
     }
 
-    fn render_edit_window(state: &mut SerialConnect, ui: egui::Ui) {
+    fn render_edit_window(state: &mut SerialConnect, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let port_type_label = ui.label("Serial Port");
+            ui.add(egui::TextEdit::singleline(&mut state.serial_port_buffer))
+                .labelled_by(port_type_label.id);
+            if ui.button("Scan").clicked() {
+                match serialport::available_ports() {
+                    Ok(mut ports) => {
+                        if ports.len() != 0 {
+                            ports.sort_unstable_by_key(|i| i.port_name.clone());
+                            for port in ports {
+                                state.avalible_ports.push(port.port_name);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        ui.label(err.to_string());
+                    }
+                }
+                state.scan = true;
+            }
+            if state.scan {
+                egui::ComboBox::from_id_salt(port_type_label.id)
+                    .selected_text(state.avalible_ports[state.port_id].to_string())
+                    .show_ui(ui, |ui| {
+                        for (i, port) in state.avalible_ports.iter().enumerate() {
+                            ui.selectable_value(&mut state.port_id, i, port);
+                        }
+                        state.serial_port_buffer = state.avalible_ports[state.port_id].to_string();
+                    });
+            }
+        });
+        ui.horizontal(|ui| {
+            let bud_rate_label = ui.label("Bud rate");
+            egui::ComboBox::from_id_salt(bud_rate_label.id)
+                .selected_text(state.bud_rate_buffer.to_string())
+                .show_ui(ui, |ui| {
+                    for (id, rate) in state.bud_rate_values.iter().enumerate() {
+                        ui.selectable_value(&mut state.bud_rate_id, id, rate.to_string());
+                    }
+                    state.bud_rate_buffer = state.bud_rate_values[state.bud_rate_id];
+                });
+        });
+        ui.horizontal(|ui| {
+            let parity_label = ui.label("Parity");
+            egui::ComboBox::from_id_salt(parity_label.id)
+                .selected_text(state.parity.to_string())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut state.parity, Parity::None, "None");
+                    ui.selectable_value(&mut state.parity, Parity::Odd, "ODD");
+                    ui.selectable_value(&mut state.parity, Parity::Even, "EVEN");
+                });
+        });
+        ui.horizontal(|ui| {
+            let stop_label = ui.label("Stop bits");
+            egui::ComboBox::from_id_salt(stop_label.id)
+                .selected_text(state.stop_bits.to_string())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut state.stop_bits, 1, "1");
+                    ui.selectable_value(&mut state.stop_bits, 2, "2");
+                });
+        });
+    }
+}
+
+#[derive(PartialEq, Eq, Debug, Clone)]
+enum ConnectionType {
+    TCP(TcpConnect),
+    ASCII(SerialConnect),
+    RTU(SerialConnect),
+}
+impl ConnectionType {
+    fn to_str(&self) -> String {
+        match self {
+            ConnectionType::TCP(_) => "TCP".to_string(),
+            ConnectionType::ASCII(_) => "ASCII".to_string(),
+            ConnectionType::RTU(_) => "RTU".to_string(),
+        }
+    }
+}
+
+struct GuiPortState {
+    is_open: bool,
+    port_type: ConnectionType,
+    connection_tcp: TcpConnect,
+    connection_ascii: SerialConnect,
+    connection_rtu: SerialConnect,
+}
+
+impl GuiPortState {
+    fn new() -> Self {
+        let connection_tcp = TcpConnect::new();
+
+        let connection_tcp2 = TcpConnect::new();
+
+        let connection_ascii = SerialConnect::new(DataBits::Eight, Parity::Even);
+        let connection_rtu = SerialConnect::new(DataBits::Eight, Parity::Even);
+        let bud_rates = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
+        Self {
+            is_open: false,
+            port_type: ConnectionType::TCP(connection_tcp2),
+            connection_tcp,
+            connection_ascii,
+            connection_rtu,
+        }
+    }
+}
+#[derive(Debug)]
+struct GuiPort {
+    port_type: ConnectionType,
+}
+
+impl GuiPort {
+    fn new() -> Self {
+        let connection = SerialConnect::new(DataBits::Eight, Parity::Even);
+        Self {
+            port_type: ConnectionType::RTU(connection),
+        }
+    }
+
+    fn render(ui: &mut egui::Ui, state: &mut GuiPortState) -> Option<GuiPort> {
         let mut close = false;
+        let mut port_connection = None;
         if state.is_open {
             let ctx = ui.ctx().clone();
             egui::Window::new("Port editor")
@@ -458,49 +614,330 @@ impl SerialConnect {
                 .open(&mut state.is_open)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(&ctx, |ui| {
+                    ui.label("Connection conf");
+                    ui.separator();
                     ui.horizontal(|ui| {
-                        let port_type_label = ui.label("Serial Port");
-                        ui.add(egui::TextEdit::singleline(&mut state.serial_port))
-                            .labelled_by(port_type_label.id);
-                        if ui.button("Scan").clicked() {
-                            match serialport::available_ports() {
-                                Ok(mut ports) => {
-                                    if ports.len() != 0 {
-                                        ports.sort_unstable_by_key(|i| i.port_name.clone());
-                                        for port in ports {
-                                            state.avalible_ports.push(port.port_name);
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    ui.label(err.to_string());
-                                }
-                            }
-                            state.scan = true;
+                        let conn_label = ui.label("Connection type");
+                        egui::ComboBox::from_id_salt(conn_label.id)
+                            .selected_text(format!("{}", state.port_type.to_str()))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut state.port_type,
+                                    ConnectionType::TCP(state.connection_tcp.clone()),
+                                    "TCP",
+                                );
+                                ui.selectable_value(
+                                    &mut state.port_type,
+                                    ConnectionType::RTU(state.connection_rtu.clone()),
+                                    "RTU",
+                                );
+                                let connection_serial_ascii =
+                                    SerialConnect::new(DataBits::Eight, Parity::Even);
+                                ui.selectable_value(
+                                    &mut state.port_type,
+                                    ConnectionType::ASCII(connection_serial_ascii),
+                                    "ASCII",
+                                );
+                            });
+                    });
+                    match &mut state.port_type {
+                        ConnectionType::TCP(conn) => {
+                            TcpConnect::render_edit_window(ui, conn);
                         }
-                        if state.scan {
-                            egui::ComboBox::from_id_salt(port_type_label.id)
-                                .selected_text(state.avalible_ports[state.port_id].to_string())
-                                .show_ui(ui, |ui| {
-                                    for (i, port) in state.avalible_ports.iter().enumerate() {
-                                        ui.selectable_value(&mut state.port_id, i, port);
-                                    }
+                        ConnectionType::ASCII(conn) | ConnectionType::RTU(conn) => {
+                            SerialConnect::render_edit_window(conn, ui)
+                        }
+                    };
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("save").clicked() {
+                                println!("{:?}", state.port_type);
+                                close = true;
+                                port_connection = Some(GuiPort {
+                                    port_type: state.port_type.clone(),
                                 });
-                        }
+                            }
+                            if ui.button("cancel").clicked() {
+                                close = true;
+                            }
+                        });
                     });
                 });
+            if close {
+                state.is_open = false;
+            }
+        }
+
+        port_connection
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DeviceCreationState {
+    pub is_open: bool,
+    pub show_advanced: bool, // Przełącznik trybu zaawansowanego (offsety)
+
+    // Podstawowe dane
+    pub name_buffer: String,
+    pub device_id: u8,
+    pub total_size_bytes: usize, // Całkowity rozmiar pamięci w bajtach
+
+    // Liczba elementów (rejestrów / coili)
+    pub holding_registers_count: u16,
+    pub input_registers_count: u16,
+    pub coils_count: u16,
+    pub discrete_inputs_count: u16,
+
+    // Offsety bajtowe (widoczne w trybie zaawansowanym)
+    pub holding_offs: usize,
+    pub input_offs: usize,
+    pub coil_offs: usize,
+    pub discrete_offs: usize,
+}
+
+impl DeviceCreationState {
+    fn new() -> Self {
+        Self {
+            is_open: false,
+            show_advanced: false,
+            name_buffer: "Nowe Urządzenie".to_string(),
+            device_id: 1,
+            total_size_bytes: 64, // Domyślnie 64 bajty pamięci
+
+            holding_registers_count: 10,
+            input_registers_count: 10,
+            coils_count: 16,
+            discrete_inputs_count: 16,
+
+            holding_offs: 0,
+            input_offs: 20,
+            coil_offs: 40,
+            discrete_offs: 44,
         }
     }
 }
 
-enum ConnectionType {
-    TCP(TcpConnect),
-    ASCII(SerialConnect),
-    RTU(SerialConnect),
-}
+struct GuiDeviceCreator;
 
-struct GuiPort {
-    port_type: ConnectionType,
+impl GuiDeviceCreator {
+    fn render(ctx: &egui::Context, state: &mut DeviceCreationState) -> Option<(u8, DynamicMemory)> {
+        let mut created_result = None;
+        let mut close = false;
+        egui::Window::new("Create new device")
+            .title_bar(true)
+            .open(&mut state.is_open)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.heading("Device configuration");
+                ui.separator();
+
+                // --- PODSTAWOWE DANE ---
+                ui.horizontal(|ui| {
+                    ui.label("Device name: ");
+                    ui.text_edit_singleline(&mut state.name_buffer);
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Modbus Slave ID:");
+                    ui.add(
+                        egui::DragValue::new(&mut state.device_id)
+                            .speed(1.0)
+                            .range(1..=247),
+                    );
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Mem capacity");
+                    ui.add(
+                        egui::DragValue::new(&mut state.total_size_bytes)
+                            .speed(1.0)
+                            .range(4..=4096),
+                    );
+                });
+
+                ui.add_space(10.0);
+                ui.separator();
+
+                // --- ROZMIARI TABLIC ---
+                ui.strong("Quantity of: ");
+                ui.horizontal(|ui| {
+                    ui.label("Holding Registers:");
+                    ui.add(egui::DragValue::new(&mut state.holding_registers_count).speed(1.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Input Registers:");
+                    ui.add(egui::DragValue::new(&mut state.input_registers_count).speed(1.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Coils:");
+                    ui.add(egui::DragValue::new(&mut state.coils_count).speed(1.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Discrete Inputs:");
+                    ui.add(egui::DragValue::new(&mut state.discrete_inputs_count).speed(1.0));
+                });
+
+                ui.add_space(10.0);
+
+                // --- TRYB ZAAWANSOWANY (OFFSETY BAJTOWE) ---
+                ui.checkbox(&mut state.show_advanced, "Advanced mode");
+                if state.show_advanced {
+                    ui.indent("advanced_offsets", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Holding registers offset:");
+                            ui.add(egui::DragValue::new(&mut state.holding_offs).speed(1.0));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Input Registers offset:");
+                            ui.add(egui::DragValue::new(&mut state.input_offs).speed(1.0));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Coils offset:");
+                            ui.add(egui::DragValue::new(&mut state.coil_offs).speed(1.0));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Discrete inputs offset:");
+                            ui.add(egui::DragValue::new(&mut state.discrete_offs).speed(1.0));
+                        });
+                    });
+                }
+
+                ui.add_space(5.0);
+                ui.strong("Memory Layout visualization");
+
+                let available_width = ui.available_width() - 20.0;
+                let track_height = 18.0; // Wysokość pojedynczego paska
+                let num_tracks = 4; // Holding, Input, Coils, Discrete
+                let total_height = (track_height * num_tracks as f32) + 12.0;
+
+                let (rect, _response) = ui.allocate_exact_size(
+                    egui::vec2(available_width, total_height),
+                    egui::Sense::hover(),
+                );
+
+                let painter = ui.painter();
+                // Tło całego kontenera wizualizacji
+                painter.rect_filled(rect, 4.0, egui::Color32::from_gray(30));
+
+                if state.total_size_bytes > 0 {
+                    let byte_width = available_width / state.total_size_bytes as f32;
+
+                    // Obliczamy rozmiary w bajtach dla każdego obszaru
+                    let hr_bytes = (state.holding_registers_count as usize) * 2;
+                    let ir_bytes = (state.input_registers_count as usize) * 2;
+                    let coil_bytes = (state.coils_count as usize + 7) / 8;
+                    let disc_bytes = (state.discrete_inputs_count as usize + 7) / 8;
+
+                    // Funkcja pomocnicza do rysowania pojedynczej ścieżki (paska)
+                    let draw_track = |track_idx: usize,
+                                      start: usize,
+                                      len: usize,
+                                      color: egui::Color32,
+                                      label: &str| {
+                        let y_offset = rect.min.y + 6.0 + (track_idx as f32 * track_height);
+
+                        // Etykieta po lewej stronie paska (wewnątrz)
+                        painter.text(
+                            egui::pos2(rect.min.x + 6.0, y_offset + (track_height / 2.0)),
+                            egui::Align2::LEFT_CENTER,
+                            label,
+                            egui::FontId::proportional(10.0),
+                            egui::Color32::WHITE,
+                        );
+
+                        let end = (start + len).min(state.total_size_bytes);
+                        if start < state.total_size_bytes && end > start {
+                            // Przesuwamy początek paska trochę w prawo, żeby zmieścić etykietę ścieżki lub rysujemy na pełnej szerokości
+                            let x_start = rect.min.x + (start as f32 * byte_width);
+                            let width = ((end - start) as f32 * byte_width).max(4.0);
+
+                            let track_rect = egui::Rect::from_min_size(
+                                egui::pos2(x_start, y_offset + 2.0),
+                                egui::vec2(width, track_height - 4.0),
+                            );
+
+                            // Używamy półprzezroczystości (Color32::linear_multiply),
+                            // dzięki czemu nałożone na siebie paski ładnie się prześwietlą!
+                            let transparent_color = color.linear_multiply(0.85);
+                            painter.rect_filled(track_rect, 2.0, transparent_color);
+                            painter.rect_stroke(
+                                track_rect,
+                                2.0,
+                                (1.0, color),
+                                egui::StrokeKind::Inside,
+                            ); // Wyraźna ramka
+                        }
+                    };
+
+                    // Rysujemy każdy typ pamięci na osobnym poziomie pod sobą
+                    draw_track(
+                        0,
+                        state.holding_offs,
+                        hr_bytes,
+                        egui::Color32::from_rgb(46, 134, 222),
+                        "HR",
+                    );
+                    draw_track(
+                        1,
+                        state.input_offs,
+                        ir_bytes,
+                        egui::Color32::from_rgb(84, 160, 255),
+                        "IR",
+                    );
+                    draw_track(
+                        2,
+                        state.coil_offs,
+                        coil_bytes,
+                        egui::Color32::from_rgb(46, 204, 113),
+                        "Coils",
+                    );
+                    draw_track(
+                        3,
+                        state.discrete_offs,
+                        disc_bytes,
+                        egui::Color32::from_rgb(26, 188, 156),
+                        "DI",
+                    );
+                }
+                ui.add_space(15.0);
+
+                // --- PRZYCISKI ---
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Save").clicked() {
+                            let name = if state.name_buffer.trim().is_empty() {
+                                "Urządzenie Modbus".to_string()
+                            } else {
+                                state.name_buffer.clone()
+                            };
+
+                            // Tworzymy nową pamięć dynamiczną
+                            let mut memory = DynamicMemory::new(name, state.total_size_bytes);
+                            memory.set_mapping(
+                                state.holding_offs,
+                                state.input_offs,
+                                state.coil_offs,
+                                state.discrete_offs,
+                            );
+
+                            created_result = Some((state.device_id, memory));
+                            close = true;
+                        }
+
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if close {
+            state.is_open = false;
+        }
+
+        created_result
+    }
 }
 
 pub struct MyApp {
@@ -517,6 +954,12 @@ pub struct MyApp {
     // Watch table
     watch_table_state: WatchCeraetionState,
     watch_tables: Vec<WatchTable>,
+    // port
+    port_state: GuiPortState,
+    port: Option<GuiPort>,
+
+    // device
+    devices_state: DeviceCreationState,
 }
 
 impl MyApp {
@@ -547,6 +990,9 @@ impl MyApp {
             center_view: CenterView::WatchTable,
             watch_table_state: WatchCeraetionState::new(),
             watch_tables: Vec::new(),
+            port_state: GuiPortState::new(),
+            port: None,
+            devices_state: DeviceCreationState::new(),
         }
     }
 
@@ -557,7 +1003,7 @@ impl MyApp {
     }
 
     fn render_watch_tables(&mut self, ui: &mut egui::Ui) {
-        if ui.button("nowa tabela").clicked() {
+        if ui.button("New table").clicked() {
             self.watch_table_state.is_open = true;
             self.watch_table_state.name_buffer =
                 format!("Watch Table ({})", self.watch_tables.len() + 1);
@@ -601,7 +1047,7 @@ impl MyApp {
                     });
                     ui.menu_button("Server", |ui| {
                         if ui.button("New").clicked() {
-                            println!("Nowe połączenie");
+                            self.port_state.is_open = true;
                         }
                         if ui.button("Edit connection").clicked() {
                             println!("edycja połączenia");
@@ -612,7 +1058,7 @@ impl MyApp {
                     });
                     ui.menu_button("Device", |ui| {
                         if ui.button("New Device").clicked() {
-                            println!("Nowe urządzenie");
+                            self.devices_state.is_open = true;
                         }
                         if ui.button("Edit Device").clicked() {
                             println!("edytowanie urządzenia");
@@ -663,6 +1109,16 @@ impl MyApp {
                     }
                 })
             });
+        if self.port_state.is_open {
+            if let Some(port) = GuiPort::render(ui, &mut self.port_state) {
+                println!("{:?}", port);
+            }
+        }
+        if self.devices_state.is_open {
+            if let Some(device) = GuiDeviceCreator::render(ui, &mut self.devices_state) {
+                println!("{:?}", device);
+            }
+        }
     }
 
     fn render_bottom_panel(&mut self, ui: &mut egui::Ui) {
