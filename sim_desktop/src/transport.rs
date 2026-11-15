@@ -1,8 +1,8 @@
 use crate::logger::{GuiLogger, LogLayer};
 use crate::sim_device::DynamicMemory;
-use core_modbus::{ModbusDevice, ModbusException, ModbusRequest, ReqPdu, execute_request};
+use core_modbus::{ModbusRequest, ReqPdu, execute_request};
 use log::Level;
-use serialport::{DataBits, Parity, SerialPort, StopBits};
+use serialport::{DataBits, Parity, StopBits};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

@@ -4,6 +4,7 @@ use log::Level;
 
 #[derive(Debug)]
 pub struct DynamicMemory {
+    pub name: String,
     pub data: Vec<u8>,
     pub holding_offs: usize,
     pub input_offs: usize,
@@ -12,13 +13,14 @@ pub struct DynamicMemory {
 }
 
 impl DynamicMemory {
-    pub fn new(size_bytes: usize) -> Self {
+    pub fn new(name: String, size_bytes: usize) -> Self {
         GuiLogger::log_to(
             LogLayer::Memory,
             Level::Info,
             &format!("Zalokowano pamięć o rozmiarze {} bajtów", size_bytes),
         );
         Self {
+            name,
             data: vec![0; size_bytes],
             holding_offs: 0,
             input_offs: 0,
