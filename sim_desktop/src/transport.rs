@@ -6,7 +6,10 @@ use serialport::{DataBits, Parity, StopBits};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 fn format_hex(data: &[u8]) -> String {
@@ -25,49 +28,99 @@ impl TcpServer {
         }
     }
 
-    pub fn run<F>(&self, mut handler: F)
+    pub fn run<F>(&self, running: Arc<AtomicBool>, mut handler: F)
     where
         F: FnMut(&[u8], &mut [u8]) -> usize,
     {
-        let listener = TcpListener::bind(&self.address).expect("Could not bind to port");
-
-        GuiLogger::log_to(
-            LogLayer::System,
-            Level::Info,
-            &format!("Serwer TCP uruchomiony i nasłuchuje na {}", self.address),
-        );
-
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    let peer = stream
-                        .peer_addr()
-                        .map(|a| a.to_string())
-                        .unwrap_or_else(|_| "Nieznany".to_string());
+        match TcpListener::bind(&self.address) {
+            Ok(listener) => {
+                // Ustawiamy listener w tryb non-blocking
+                if let Err(e) = listener.set_nonblocking(true) {
                     GuiLogger::log_to(
-                        LogLayer::Transport,
-                        Level::Info,
-                        &format!("Zaakceptowano nowe połączenie TCP od: {}", peer),
+                        LogLayer::System,
+                        Level::Error,
+                        &format!("can not set non blocking for tcp listener: {}", e),
                     );
-                    self.handle_client(stream, &mut handler, &peer);
+                    return;
                 }
-                Err(err) => GuiLogger::log_to(
-                    LogLayer::Transport,
-                    Level::Error,
-                    &format!("Błąd przy nawiązywaniu połączenia TCP: {}", err),
-                ),
+                GuiLogger::log_to(
+                    LogLayer::System,
+                    Level::Info,
+                    &format!("Serwer TCP uruchomiony i nasłuchuje na {}", self.address),
+                );
+
+                // Pętla główna nasłuchująca nowych klientów
+                while running.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, addr)) => {
+                            let peer = addr.to_string();
+                            GuiLogger::log_to(
+                                LogLayer::Transport,
+                                Level::Info,
+                                &format!("Zaakceptowano nowe połączenie TCP od: {}", peer),
+                            );
+
+                            // Obsługujemy klienta przekazując mu główną flagę `running`
+                            self.handle_client(stream, &mut handler, &peer, &running);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            // Brak klientów – krótka pausa, żeby nie obciążać CPU i sprawdzić flagę STOP
+                            thread::sleep(Duration::from_millis(50));
+                        }
+                        Err(err) => {
+                            GuiLogger::log_to(
+                                LogLayer::Transport,
+                                Level::Error,
+                                &format!("Błąd przy nawiązywaniu połączenia TCP: {}", err),
+                            );
+                        }
+                    }
+                }
+
+                GuiLogger::log_to(
+                    LogLayer::System,
+                    Level::Info,
+                    &format!("Serwer TCP na adresie {} został zatrzymany.", self.address),
+                );
+            }
+            Err(e) => {
+                GuiLogger::log_to(
+                    LogLayer::System,
+                    Level::Info,
+                    &format!("Could not bind to: {}, {}", self.address, e),
+                );
             }
         }
     }
 
-    fn handle_client<F>(&self, mut stream: TcpStream, handler: &mut F, peer: &str)
-    where
+    fn handle_client<F>(
+        &self,
+        mut stream: TcpStream,
+        handler: &mut F,
+        peer: &str,
+        running: &Arc<AtomicBool>,
+    ) where
         F: FnMut(&[u8], &mut [u8]) -> usize,
     {
+        // KLUCZOWE: Ustawiamy strumień klienta w tryb NON-BLOCKING!
+        // Dzięki temu read() nie czeka w nieskończoność, tylko od razu wraca z WouldBlock,
+        // pozwalając pętli na natychmiastowe wykrycie zmiany flagi `running` na false.
+        if let Err(e) = stream.set_nonblocking(true) {
+            GuiLogger::log_to(
+                LogLayer::Transport,
+                Level::Error,
+                &format!(
+                    "Nie udało się ustawić non-blocking dla klienta {}: {}",
+                    peer, e
+                ),
+            );
+            return;
+        }
+
         let mut rx_buffer = [0u8; 1024];
         let mut tx_buffer = [0u8; 1024];
 
-        loop {
+        while running.load(Ordering::SeqCst) {
             match stream.read(&mut rx_buffer) {
                 Ok(0) => {
                     GuiLogger::log_to(
@@ -81,7 +134,7 @@ impl TcpServer {
                     let rx_data = &rx_buffer[..bytes_read];
                     GuiLogger::log_to(
                         LogLayer::Transport,
-                        Level::Info, // Zwykle ukryte, włączane przy głębokim debugowaniu
+                        Level::Info,
                         &format!("TCP RX ({}): [{}]", peer, format_hex(rx_data)),
                     );
 
@@ -106,6 +159,15 @@ impl TcpServer {
                     }
                 }
                 Err(err) => {
+                    // Jeśli gniazdo nie ma danych do odczytu w tym momencie, wyrzuca WouldBlock.
+                    // Zamiast blokować, robimy krótką pauzę i sprawdzamy flagę `running`.
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut
+                    {
+                        thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+
                     GuiLogger::log_to(
                         LogLayer::Transport,
                         Level::Error,
@@ -115,9 +177,10 @@ impl TcpServer {
                 }
             }
         }
+
+        println!("Sesja klienta {} została zamknięta.", peer);
     }
 }
-
 pub struct ModbusTcpAdu;
 
 impl ModbusTcpAdu {
@@ -300,7 +363,7 @@ impl SerialServer {
         }
     }
 
-    pub fn run<F>(&self, mut handler: F)
+    pub fn run<F>(&self, running: Arc<AtomicBool>, mut handler: F)
     where
         F: FnMut(&[u8], &mut [u8]) -> usize,
     {
@@ -319,7 +382,7 @@ impl SerialServer {
                     Level::Error,
                     &format!("Nie udało się otworzyć portu {}: {}", self.port_name, e),
                 );
-                return; // Przerwij, zamiast robić panic!
+                return;
             }
         };
 
@@ -336,7 +399,16 @@ impl SerialServer {
         let mut tx_buffer = [0u8; 256];
         let mut rx_len = 0;
 
-        loop {
+        while running.load(Ordering::SeqCst) {
+            if rx_len >= rx_buffer.len() {
+                GuiLogger::log_to(
+                    LogLayer::Transport,
+                    Level::Error,
+                    "Przepełnienie bufora odbiorczego Serial – czyszczę bufor.",
+                );
+                rx_len = 0;
+            }
+
             match port.read(&mut rx_buffer[rx_len..]) {
                 Ok(bytes_read) => rx_len += bytes_read,
                 Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
@@ -358,6 +430,7 @@ impl SerialServer {
                                     &format!("Błąd wysyłania do portu COM: {}", err),
                                 );
                             } else {
+                                let _ = port.flush();
                                 GuiLogger::log_to(
                                     LogLayer::Transport,
                                     Level::Info,
@@ -378,6 +451,12 @@ impl SerialServer {
                 }
             }
         }
+
+        GuiLogger::log_to(
+            LogLayer::System,
+            Level::Info,
+            &format!("Serwer Serial zamknięty: {}", self.port_name),
+        );
     }
 }
 
@@ -528,6 +607,10 @@ impl ModbusRouter {
         }
     }
 
+    pub fn next_free_id(&self) -> Option<u8> {
+        (1u8..=247).find(|id| !self.get_devices().contains_key(id))
+    }
+
     pub fn add_device(&mut self, slave_id: u8, device: DynamicMemory) {
         self.devices.insert(slave_id, device);
     }
@@ -538,5 +621,8 @@ impl ModbusRouter {
 
     pub fn get_devices(&self) -> &HashMap<u8, DynamicMemory> {
         &self.devices
+    }
+    pub fn get_devices_mut(&mut self) -> &mut HashMap<u8, DynamicMemory> {
+        &mut self.devices
     }
 }

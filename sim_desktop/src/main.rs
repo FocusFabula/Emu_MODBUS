@@ -1,7 +1,14 @@
 mod logger;
+mod persistence;
 mod sim_device;
 mod transport;
-use std::sync::mpsc;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::Duration,
+};
 mod gui;
 use crate::{
     logger::{GuiLogger, GuiLoggerBuffer},
@@ -11,16 +18,11 @@ use crate::{
     },
 };
 use core_modbus::ModbusDevice;
-use eframe::egui;
+use eframe::egui::{self, Order};
 use log::Level;
 use serialport::{DataBits, Parity};
 use std::sync::{Arc, Mutex};
 use std::thread;
-enum ConnectionType {
-    RTU,
-    ASCII,
-    TCP,
-}
 
 fn main() {
     let router_arc = Arc::new(Mutex::new(ModbusRouter::new()));
@@ -43,29 +45,72 @@ fn main() {
         "Dostępne urządzenia sieciowe pod adresem 1 i 10",
     );
     drop(router);
-
     let router_handler = router_arc.clone();
-    thread::spawn(move || {
-        let server_type = ConnectionType::TCP;
-        match server_type {
-            ConnectionType::RTU => {
-                println!("Dostepne urządzenia sieciowe pod id: 1, 10");
-                let server = SerialServer::new("/dev/pts/3", 9600, DataBits::Eight, Parity::Even);
-                server.run(|rw, tx| ModbusRtuAdu::process(rw, tx, &router_handler));
-            }
-            ConnectionType::ASCII => {
-                let server = SerialServer::new("/dev/pts/3", 9600, DataBits::Eight, Parity::Even);
-                server.run(|rw, tx| ModbusAsciiAdu::process(rw, tx, &router_handler));
-            }
+    let server_running: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let server_running_clone = server_running.clone();
+    let (server_tx, server_rx) = mpsc::channel();
 
-            ConnectionType::TCP => {
-                println!("Server wystartował pod IP: 0.0.0.0:5020");
-                let server = TcpServer::new("0.0.0.0:5020");
-                server.run(|rw, tx| ModbusTcpAdu::process(rw, tx, &router_handler));
+    thread::spawn(move || {
+        let mut active_server_handle: Option<thread::JoinHandle<()>> = None;
+
+        while let Ok(cmd) = server_rx.recv() {
+            match cmd {
+                gui::ServerCommand::Start(conn) => {
+                    // 1. Zatrzymaj ewentualny poprzedni serwer i poczekaj aż zwolni port/socket
+                    server_running_clone.store(false, Ordering::SeqCst);
+                    if let Some(handle) = active_server_handle.take() {
+                        let _ = handle.join();
+                    }
+
+                    // 2. Włącz flagę dla nowego serwera
+                    server_running_clone.store(true, Ordering::SeqCst);
+                    let running_flag = server_running_clone.clone();
+                    let router = router_handler.clone();
+
+                    // 3. Odpal nowy serwer w osobnym wątku, żeby pętla komend nie blokowała się
+                    active_server_handle = Some(thread::spawn(move || match conn {
+                        gui::ConnectionType::TCP(conf) => {
+                            let addr = conf.to_string();
+                            println!("Server TCP started at: {}", addr);
+                            let server = TcpServer::new(&addr);
+                            server.run(running_flag, |rw, tx| {
+                                ModbusTcpAdu::process(rw, tx, &router)
+                            });
+                        }
+                        gui::ConnectionType::RTU(conf) => {
+                            let port_name = conf.serial_port_buffer;
+                            let bud_rate = conf.bud_rate_buffer as u32;
+                            let parity = conf.parity;
+                            let data_bits = conf.data_bits;
+                            println!("Server RTU started at: {} ({})", port_name, bud_rate);
+                            let server = SerialServer::new(&port_name, bud_rate, data_bits, parity);
+                            server.run(running_flag, |rw, tx| {
+                                ModbusRtuAdu::process(rw, tx, &router)
+                            });
+                        }
+                        gui::ConnectionType::ASCII(conf) => {
+                            let port_name = conf.serial_port_buffer;
+                            let bud_rate = conf.bud_rate_buffer as u32;
+                            let parity = conf.parity;
+                            let data_bits = conf.data_bits;
+                            println!("Server ASCII started at: {} ({})", port_name, bud_rate);
+                            let server = SerialServer::new(&port_name, bud_rate, data_bits, parity);
+                            server.run(running_flag, |rw, tx| {
+                                ModbusAsciiAdu::process(rw, tx, &router)
+                            });
+                        }
+                    }));
+                }
+                gui::ServerCommand::Stop => {
+                    server_running_clone.store(false, Ordering::SeqCst);
+                    if let Some(handle) = active_server_handle.take() {
+                        let _ = handle.join();
+                    }
+                    println!("Server stopped");
+                }
             }
         }
     });
-
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([600.0, 800.0]),
         ..Default::default()
@@ -74,6 +119,6 @@ fn main() {
     let _ = eframe::run_native(
         "testowanie emu_modbus",
         options,
-        Box::new(|cc| Ok(Box::new(gui::MyApp::new(rx, cc, router_gui)))),
+        Box::new(|cc| Ok(Box::new(gui::MyApp::new(rx, cc, router_gui, server_tx)))),
     );
 }

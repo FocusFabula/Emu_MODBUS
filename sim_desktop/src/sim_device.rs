@@ -1,8 +1,9 @@
 use crate::logger::{GuiLogger, LogLayer};
 use core_modbus::{ModbusDevice, ModbusException};
 use log::Level;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DynamicMemory {
     pub name: String,
     pub data: Vec<u8>,
@@ -27,6 +28,10 @@ impl DynamicMemory {
             coil_offs: 0,
             discrete_offs: 0,
         }
+    }
+
+    pub fn capacity_bytes(&self) -> usize {
+        self.data.len()
     }
     pub fn set_mapping(&mut self, holding: usize, input: usize, coil: usize, discrete: usize) {
         self.holding_offs = holding;
