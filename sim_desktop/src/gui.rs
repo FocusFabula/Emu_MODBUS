@@ -255,7 +255,10 @@ impl WatchTableRow {
             CellDataType::Coil => {
                 let _ = dev.write_coil(idx as u16, self.value != 0);
             }
-            CellDataType::InputRegister | CellDataType::DiscreteInput => {}
+            CellDataType::InputRegister => {
+            }
+
+            CellDataType::DiscreteInput => {}
         }
     }
 }
@@ -1839,6 +1842,23 @@ impl GuiDeviceCreator {
                     ui.label("Discrete Inputs:");
                     ui.add(egui::DragValue::new(&mut state.discrete_inputs_count).speed(1.0));
                 });
+
+                let hr_bytes = (state.holding_registers_count as usize) * 2;
+                let ir_bytes = (state.input_registers_count as usize) * 2;
+                let coil_bytes = (state.coils_count as usize + 7) / 8;
+                let disc_bytes = (state.discrete_inputs_count as usize + 7) / 8;
+
+                if !state.show_advanced {
+                    state.holding_offs = 0;
+                    state.input_offs = state.holding_offs + hr_bytes;
+                    state.coil_offs = state.input_offs + ir_bytes;
+                    state.discrete_offs = state.coil_offs + coil_bytes;
+
+                    let required_bytes = (state.discrete_offs + disc_bytes).max(4);
+                    if state.total_size_bytes < required_bytes {
+                        state.total_size_bytes = required_bytes;
+                    }
+                }
 
                 ui.add_space(10.0);
 
