@@ -255,8 +255,7 @@ impl WatchTableRow {
             CellDataType::Coil => {
                 let _ = dev.write_coil(idx as u16, self.value != 0);
             }
-            CellDataType::InputRegister => {
-            }
+            CellDataType::InputRegister => {}
 
             CellDataType::DiscreteInput => {}
         }
@@ -1718,6 +1717,31 @@ impl DeviceCreationState {
             || dev.coil_offs != 0
             || dev.discrete_offs != 0;
 
+        let has_any_counts = dev.holding_count > 0
+            || dev.input_count > 0
+            || dev.coil_count > 0
+            || dev.discrete_count > 0;
+
+        let (hr_count, ir_count, coil_count, di_count) = if has_any_counts {
+            (
+                dev.holding_count,
+                dev.input_count,
+                dev.coil_count,
+                dev.discrete_count,
+            )
+        } else {
+            let hr_bytes = dev.input_offs.saturating_sub(dev.holding_offs);
+            let ir_bytes = dev.coil_offs.saturating_sub(dev.input_offs);
+            let coil_bytes = dev.discrete_offs.saturating_sub(dev.coil_offs);
+            let di_bytes = dev.capacity_bytes().saturating_sub(dev.discrete_offs);
+            (
+                (hr_bytes / 2).min(u16::MAX as usize) as u16,
+                (ir_bytes / 2).min(u16::MAX as usize) as u16,
+                (coil_bytes * 8).min(u16::MAX as usize) as u16,
+                (di_bytes * 8).min(u16::MAX as usize) as u16,
+            )
+        };
+
         Self {
             is_open: true,
             show_advanced: has_custom_offsets,
@@ -1726,10 +1750,10 @@ impl DeviceCreationState {
             original_id: Some(id),
             total_size_bytes,
 
-            holding_registers_count: 10,
-            input_registers_count: 10,
-            coils_count: 16,
-            discrete_inputs_count: 16,
+            holding_registers_count: hr_count,
+            input_registers_count: ir_count,
+            coils_count: coil_count,
+            discrete_inputs_count: di_count,
 
             holding_offs: dev.holding_offs,
             input_offs: dev.input_offs,
@@ -1845,8 +1869,8 @@ impl GuiDeviceCreator {
 
                 let hr_bytes = (state.holding_registers_count as usize) * 2;
                 let ir_bytes = (state.input_registers_count as usize) * 2;
-                let coil_bytes = (state.coils_count as usize + 7) / 8;
-                let disc_bytes = (state.discrete_inputs_count as usize + 7) / 8;
+                let coil_bytes = (state.coils_count as usize).div_ceil(8);
+                let disc_bytes = (state.discrete_inputs_count as usize).div_ceil(8);
 
                 if !state.show_advanced {
                     state.holding_offs = 0;
@@ -1854,12 +1878,17 @@ impl GuiDeviceCreator {
                     state.coil_offs = state.input_offs + ir_bytes;
                     state.discrete_offs = state.coil_offs + coil_bytes;
 
-                    let required_bytes = (state.discrete_offs + disc_bytes).max(4);
+                    let required_bytes = DynamicMemory::required_bytes_for_counts(
+                        state.holding_registers_count,
+                        state.input_registers_count,
+                        state.coils_count,
+                        state.discrete_inputs_count,
+                    )
+                    .max(4);
                     if state.total_size_bytes < required_bytes {
                         state.total_size_bytes = required_bytes;
                     }
                 }
-
                 ui.add_space(10.0);
 
                 // --- TRYB ZAAWANSOWANY (OFFSETY BAJTOWE) ---
@@ -2010,6 +2039,13 @@ impl GuiDeviceCreator {
                                     state.input_offs,
                                     state.coil_offs,
                                     state.discrete_offs,
+                                );
+
+                                memory.set_counts(
+                                    state.holding_registers_count,
+                                    state.input_registers_count,
+                                    state.coils_count,
+                                    state.discrete_inputs_count,
                                 );
 
                                 created_result = Some((state.device_id, memory));
@@ -2725,6 +2761,7 @@ impl MyApp {
                             .map(|(id, dev)| (*id, dev.name.clone()))
                             .collect()
                     };
+
                     if let Some((id, mut device)) =
                         GuiDeviceCreator::render(ui, &mut self.devices_state, &occupied_devices)
                     {
@@ -2732,10 +2769,34 @@ impl MyApp {
 
                         if let Some(old_id) = self.devices_panel.editing_id.take() {
                             if let Some(old_dev) = router.get_devices_mut().remove(&old_id) {
-                                let copy_len = old_dev.data.len().min(device.data.len());
-                                device.data[..copy_len].copy_from_slice(&old_dev.data[..copy_len]);
+                                let same_layout = old_dev.holding_offs == device.holding_offs
+                                    && old_dev.input_offs == device.input_offs
+                                    && old_dev.coil_offs == device.coil_offs
+                                    && old_dev.discrete_offs == device.discrete_offs
+                                    && old_dev.holding_count == device.holding_count
+                                    && old_dev.input_count == device.input_count
+                                    && old_dev.coil_count == device.coil_count
+                                    && old_dev.discrete_count == device.discrete_count;
+
+                                if same_layout {
+                                    let copy_len = old_dev.data.len().min(device.data.len());
+                                    device.data[..copy_len]
+                                        .copy_from_slice(&old_dev.data[..copy_len]);
+                                } else {
+                                    for addr in 0..old_dev.holding_count.min(device.holding_count) {
+                                        if let Ok(val) = old_dev.get_holding_register(addr) {
+                                            let _ = device.write_holding_register(addr, val);
+                                        }
+                                    }
+                                    for addr in 0..old_dev.coil_count.min(device.coil_count) {
+                                        if let Ok(val) = old_dev.get_coil(addr) {
+                                            let _ = device.write_coil(addr, val);
+                                        }
+                                    }
+                                }
                             }
                         }
+
                         router.add_device(id, device);
                         action_dirty_project = true;
                         self.devices_panel.selected_id = Some(id);
