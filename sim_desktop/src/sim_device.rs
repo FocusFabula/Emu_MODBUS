@@ -42,6 +42,53 @@ impl DynamicMemory {
         }
     }
 
+    pub fn clear_memory(&mut self) {
+        self.data.fill(0);
+        GuiLogger::log_to(
+            LogLayer::Memory,
+            Level::Info,
+            &format!("Wyzerowano pamięć urządzenia \"{}\"", self.name),
+        );
+    }
+
+    pub fn fill_test_data(&mut self) {
+        // Holding Registers: 100, 101, 102...
+        for i in 0..self.holding_count {
+            let _ = self.write_holding_register(i, 100 + i);
+        }
+        // Input Registers: 1000, 1010, 1020... (zapis bezpośrednio do obszaru IR w granicach bufora)
+        for i in 0..self.input_count {
+            let byte_idx = self.input_offs + (i as usize) * 2;
+            if byte_idx + 1 < self.data.len() {
+                let bytes = (1000 + i * 10).to_be_bytes();
+                self.data[byte_idx] = bytes[0];
+                self.data[byte_idx + 1] = bytes[1];
+            }
+        }
+        // Coils: naprzemiennie true / false
+        for i in 0..self.coil_count {
+            let _ = self.write_coil(i, i % 2 == 0);
+        }
+        // Discrete Inputs: co trzeci bit włączony
+        for i in 0..self.discrete_count {
+            let byte_idx = self.discrete_offs + (i as usize) / 8;
+            let bit_idx = (i as usize) % 8;
+            if byte_idx < self.data.len() {
+                if i % 3 == 0 {
+                    self.data[byte_idx] |= 1 << bit_idx;
+                } else {
+                    self.data[byte_idx] &= !(1 << bit_idx);
+                }
+            }
+        }
+
+        GuiLogger::log_to(
+            LogLayer::Memory,
+            Level::Info,
+            &format!("Wypełniono danymi testowymi urządzenie \"{}\"", self.name),
+        );
+    }
+
     pub fn capacity_bytes(&self) -> usize {
         self.data.len()
     }

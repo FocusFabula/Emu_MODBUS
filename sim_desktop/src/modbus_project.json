@@ -1,0 +1,174 @@
+{
+  "version": 1,
+  "connection": {
+    "TCP": {
+      "ip": "127.0.0.1",
+      "port": 5020,
+      "timeout": {
+        "secs": 3,
+        "nanos": 0
+      }
+    }
+  },
+  "devices": {
+    "10": {
+      "name": "Jebany jest",
+      "data": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        86,
+        0,
+        0
+      ],
+      "holding_offs": 0,
+      "input_offs": 0,
+      "coil_offs": 0,
+      "discrete_offs": 0
+    },
+    "2": {
+      "name": "Nowe Urządzenie",
+      "data": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "holding_offs": 0,
+      "input_offs": 20,
+      "coil_offs": 40,
+      "discrete_offs": 44
+    },
+    "1": {
+      "name": "dis",
+      "data": [
+        0,
+        0,
+        0,
+        42
+      ],
+      "holding_offs": 0,
+      "input_offs": 0,
+      "coil_offs": 0,
+      "discrete_offs": 0
+    }
+  },
+  "watch_tables": [
+    {
+      "name": "Watch Table (1)",
+      "rows": [
+        {
+          "device": 1,
+          "id": 1,
+          "mem_addr": 5,
+          "datatype": "InputRegister",
+          "value": 0,
+          "format": "DEC",
+          "comment": ""
+        }
+      ],
+      "period": {
+        "secs": 0,
+        "nanos": 500000000
+      },
+      "active_cols": [
+        "DeviceName",
+        "RowId",
+        "MemAddr",
+        "Value",
+        "Format",
+        "DataType"
+      ]
+    },
+    {
+      "name": "Watch Table (2)",
+      "rows": [
+        {
+          "device": 2,
+          "id": 1,
+          "mem_addr": 67,
+          "datatype": "InputRegister",
+          "value": 0,
+          "format": "DEC",
+          "comment": ""
+        }
+      ],
+      "period": {
+        "secs": 0,
+        "nanos": 500000000
+      },
+      "active_cols": [
+        "DeviceName",
+        "RowId",
+        "MemAddr",
+        "Value",
+        "Format",
+        "DataType"
+      ]
+    }
+  ]
+}

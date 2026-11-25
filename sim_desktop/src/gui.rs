@@ -317,12 +317,22 @@ impl WatchCeraetionState {
 enum RowSelectTarget {
     Format,
     Device,
+    DataType,
 }
 
 #[derive(Debug, Clone)]
 pub struct RowSelectModal {
     pub row_idx: usize,
     target: RowSelectTarget,
+}
+
+#[derive(Debug, Clone)]
+pub struct EditRowModal {
+    pub row_idx: usize,
+    pub device: u8,
+    pub mem_addr: u16,
+    pub datatype: CellDataType,
+    pub comment: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -344,6 +354,9 @@ pub struct WatchTable {
     pub row_ctx_menu: Option<(usize, egui::Pos2)>,
     #[serde(skip)]
     pub dirty_project: bool,
+
+    #[serde(skip)]
+    pub edit_row_modal: Option<EditRowModal>,
 }
 
 impl WatchTable {
@@ -360,6 +373,7 @@ impl WatchTable {
             row_select_modal: None,
             row_ctx_menu: None,
             dirty_project: false,
+            edit_row_modal: None,
         }
     }
 
@@ -583,6 +597,7 @@ impl WatchTable {
         let mut row_to_write_back: Option<usize> = None;
         let mut row_to_sync_idx: Option<usize> = None;
         let mut action_duplicate_row_idx: Option<usize> = None;
+        let mut action_edit_row_idx: Option<usize> = None;
 
         let any_selected = self.rows.iter().any(|r| r.selected);
 
@@ -739,7 +754,16 @@ impl WatchTable {
                                                 )),
 
                                                 ActiveCol::DataType => {
-                                                    ui.label(format!("{:?}", row_data.datatype))
+                                                    let resp = ui
+                                                        .button(format!("{:?}", row_data.datatype));
+                                                    if resp.clicked() {
+                                                        self.row_select_modal =
+                                                            Some(RowSelectModal {
+                                                                row_idx,
+                                                                target: RowSelectTarget::DataType,
+                                                            });
+                                                    }
+                                                    resp
                                                 }
                                                 ActiveCol::Comment => ui.add(
                                                     egui::TextEdit::singleline(
@@ -1031,6 +1055,7 @@ impl WatchTable {
             let title = match modal.target {
                 RowSelectTarget::Format => "Wybierz format",
                 RowSelectTarget::Device => "Wybierz urządzenie",
+                RowSelectTarget::DataType => "Wybierz typ danych",
             };
 
             egui::Window::new(title)
@@ -1075,6 +1100,23 @@ impl WatchTable {
                                 if ui.selectable_label(row.device == id, label).clicked() {
                                     row.device = id;
                                     row_to_sync_idx = Some(modal.row_idx);
+                                    close = true;
+                                }
+                            }
+                        }
+                        RowSelectTarget::DataType => {
+                            for (dtype, name) in [
+                                (CellDataType::HoldingRegister, "HoldingRegister"),
+                                (CellDataType::InputRegister, "InputRegister"),
+                                (CellDataType::Coil, "Coil"),
+                                (CellDataType::DiscreteInput, "DiscreteInput"),
+                            ] {
+                                if ui.selectable_label(row.datatype == dtype, name).clicked() {
+                                    row.datatype = dtype;
+                                    row.edit_buffer = None;
+                                    row.edit_error = None;
+                                    row_to_sync_idx = Some(modal.row_idx);
+                                    self.dirty_project = true;
                                     close = true;
                                 }
                             }
@@ -2082,6 +2124,7 @@ struct DevicesPanelState {
     pub filter_query: String,
     pub select_dialog_mode: Option<DeviceSelectMode>,
     pub picker_selected_id: Option<u8>,
+    pub inspect_device_id: Option<u8>,
 }
 
 impl DevicesPanelState {
@@ -2966,6 +3009,10 @@ impl MyApp {
         let mut duplicate_id: Option<u8> = None;
         let mut request_delete_id: Option<u8> = None;
 
+        let mut clear_mem_id: Option<u8> = None;
+        let mut fill_test_id: Option<u8> = None;
+        let mut inspect_id: Option<u8> = None;
+
         egui::Panel::left("Devices")
             .resizable(true)
             .show_collapsible(ui, &mut self.left, |ui| {
@@ -3037,6 +3084,20 @@ impl MyApp {
                                 duplicate_id = Some(*id);
                                 ui.close();
                             }
+
+                            if ui.button("🔍 Podgląd pamięci").clicked() {
+                                inspect_id = Some(*id);
+                                ui.close();
+                            }
+                            if ui.button("🧪 Wypełnij testowymi danymi").clicked() {
+                                fill_test_id = Some(*id);
+                                ui.close();
+                            }
+                            if ui.button("🧹 Wyzeruj pamięć").clicked() {
+                                clear_mem_id = Some(*id);
+                                ui.close();
+                            }
+
                             ui.separator();
                             if ui
                                 .button(
@@ -3107,6 +3168,221 @@ impl MyApp {
 
         if let Some(id) = request_delete_id {
             self.devices_panel.pending_delete_id = Some(id);
+        }
+
+        if let Some(id) = inspect_id {
+            self.devices_panel.selected_id = Some(id);
+            self.devices_panel.inspect_device_id = Some(id);
+        }
+
+        if let Some(id) = fill_test_id {
+            let mut changed = false;
+            {
+                let mut router = self.router.lock().unwrap();
+                if let Some(dev) = router.get_devices_mut().get_mut(&id) {
+                    dev.fill_test_data();
+                    changed = true;
+                }
+            }
+            if changed {
+                self.devices_panel.selected_id = Some(id);
+                self.mark_project_dirty();
+            }
+        }
+
+        if let Some(id) = clear_mem_id {
+            let mut changed = false;
+            {
+                let mut router = self.router.lock().unwrap();
+                if let Some(dev) = router.get_devices_mut().get_mut(&id) {
+                    dev.clear_memory();
+                    changed = true;
+                }
+            }
+            if changed {
+                self.devices_panel.selected_id = Some(id);
+                self.mark_project_dirty();
+            }
+        }
+
+        if let Some(id) = self.devices_panel.inspect_device_id {
+            let mut open = true;
+            let mut close = false;
+            let mut do_fill = false;
+            let mut do_clear = false;
+
+            let snapshot = {
+                let router = self.router.lock().unwrap();
+                router.get_devices().get(&id).cloned()
+            };
+
+            egui::Window::new(format!("Podgląd pamięci — Slave ID {}", id))
+                .open(&mut open)
+                .resizable(true)
+                .default_size([460.0, 360.0])
+                .show(ui.ctx(), |ui| {
+                    let Some(dev) = snapshot else {
+                        ui.colored_label(egui::Color32::LIGHT_RED, "Urządzenie nie istnieje.");
+                        if ui.button("Zamknij").clicked() {
+                            close = true;
+                        }
+                        return;
+                    };
+
+                    ui.horizontal(|ui| {
+                        ui.strong(&dev.name);
+                        ui.separator();
+                        ui.label(format!("Pojemność: {} B", dev.capacity_bytes()));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("🧹 Wyzeruj").clicked() {
+                                do_clear = true;
+                            }
+                            if ui.button("🧪 Dane testowe").clicked() {
+                                do_fill = true;
+                            }
+                        });
+                    });
+
+                    ui.label(format!(
+                "Offsety: HR={}, IR={}, Coils={}, DI={} | Ilości: HR={}, IR={}, Coils={}, DI={}",
+                dev.holding_offs,
+                dev.input_offs,
+                dev.coil_offs,
+                dev.discrete_offs,
+                dev.holding_count,
+                dev.input_count,
+                dev.coil_count,
+                dev.discrete_count,
+            ));
+                    ui.separator();
+
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        egui::CollapsingHeader::new(format!(
+                            "Holding Registers ({})",
+                            dev.holding_count
+                        ))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            for i in 0..dev.holding_count {
+                                match dev.get_holding_register(i) {
+                                    Ok(v) => {
+                                        ui.monospace(format!(
+                                            "HR #{:<4} -> {} (0x{:04X})",
+                                            i + 1,
+                                            v,
+                                            v
+                                        ));
+                                    }
+                                    Err(_) => {
+                                        ui.colored_label(
+                                            egui::Color32::LIGHT_RED,
+                                            format!("HR #{:<4} -> poza zakresem", i + 1),
+                                        );
+                                    }
+                                }
+                            }
+                        });
+
+                        egui::CollapsingHeader::new(format!(
+                            "Input Registers ({})",
+                            dev.input_count
+                        ))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for i in 0..dev.input_count {
+                                match dev.get_input_register(i) {
+                                    Ok(v) => {
+                                        ui.monospace(format!(
+                                            "IR #{:<4} -> {} (0x{:04X})",
+                                            i + 1,
+                                            v,
+                                            v
+                                        ));
+                                    }
+                                    Err(_) => {
+                                        ui.colored_label(
+                                            egui::Color32::LIGHT_RED,
+                                            format!("IR #{:<4} -> poza zakresem", i + 1),
+                                        );
+                                    }
+                                }
+                            }
+                        });
+
+                        egui::CollapsingHeader::new(format!("Coils ({})", dev.coil_count))
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                for i in 0..dev.coil_count {
+                                    match dev.get_coil(i) {
+                                        Ok(v) => {
+                                            ui.monospace(format!(
+                                                "Coil #{:<4} -> {}",
+                                                i + 1,
+                                                v as u8
+                                            ));
+                                        }
+                                        Err(_) => {
+                                            ui.colored_label(
+                                                egui::Color32::LIGHT_RED,
+                                                format!("Coil #{:<4} -> poza zakresem", i + 1),
+                                            );
+                                        }
+                                    }
+                                }
+                            });
+
+                        egui::CollapsingHeader::new(format!(
+                            "Discrete Inputs ({})",
+                            dev.discrete_count
+                        ))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for i in 0..dev.discrete_count {
+                                match dev.get_discrete_input(i) {
+                                    Ok(v) => {
+                                        ui.monospace(format!("DI #{:<4} -> {}", i + 1, v as u8));
+                                    }
+                                    Err(_) => {
+                                        ui.colored_label(
+                                            egui::Color32::LIGHT_RED,
+                                            format!("DI #{:<4} -> poza zakresem", i + 1),
+                                        );
+                                    }
+                                }
+                            }
+                        });
+                    });
+                });
+
+            if do_fill {
+                let mut changed = false;
+                {
+                    let mut router = self.router.lock().unwrap();
+                    if let Some(dev) = router.get_devices_mut().get_mut(&id) {
+                        dev.fill_test_data();
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.mark_project_dirty();
+                }
+            }
+            if do_clear {
+                let mut changed = false;
+                {
+                    let mut router = self.router.lock().unwrap();
+                    if let Some(dev) = router.get_devices_mut().get_mut(&id) {
+                        dev.clear_memory();
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.mark_project_dirty();
+                }
+            }
+            if close || !open {
+                self.devices_panel.inspect_device_id = None;
+            }
         }
 
         // Potwierdzenie usunięcia urządzenia zapisane w `devices_panel.pending_delete_id`
